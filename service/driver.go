@@ -6,10 +6,12 @@ import (
 	"github.com/aerokube/selenoid/info"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/aerokube/selenoid/session"
@@ -67,12 +69,14 @@ func (d *Driver) StartWithCancel() (*StartedService, error) {
 	log.Printf("[%d] [STARTING_PROCESS] [%s]", requestId, cmdLine)
 	s := time.Now()
 	err = cmd.Start()
+
 	if err != nil {
 		return nil, fmt.Errorf("cannot start process %v: %v", cmdLine, err)
 	}
 	err = wait(u.String(), d.StartupTimeout)
 	if err != nil {
-		d.stopProcess(cmd)
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_ = cmd.Wait()
 		return nil, err
 	}
 	log.Printf("[%d] [PROCESS_STARTED] [%d] [%.2fs]", requestId, cmd.Process.Pid, info.SecondsSince(s))
@@ -81,19 +85,56 @@ func (d *Driver) StartWithCancel() (*StartedService, error) {
 	if d.Caps.VNC {
 		hp.VNC = "127.0.0.1:5900"
 	}
-	return &StartedService{Url: u, HostPort: hp, Origin: fmt.Sprintf("localhost:%s", port), Cancel: func() { d.stopProcess(cmd) }}, nil
+	return &StartedService{Url: u, HostPort: hp, Origin: fmt.Sprintf("localhost:%s", port), Cancel: func() {
+		d.stopDriver(cmd, url.URL{Scheme: "http", Host: "127.0.0.1:" + port, Path: "shutdown"})
+	}}, nil
 }
 
-func (d *Driver) stopProcess(cmd *exec.Cmd) {
+func (d *Driver) stopDriver(cmd *exec.Cmd, url url.URL) {
 	s := time.Now()
 	log.Printf("[%d] [TERMINATING_PROCESS] [%d]", d.RequestId, cmd.Process.Pid)
-	err := stopProc(cmd)
+	deadline := time.Now().Add(10 * time.Second)
+	result, err := http.Get(url.String())
+	if err != nil {
+		log.Printf("[%d] [GRACEFUL_CHROMEDRIVER_SHUTDOWN_FAILED] [%d] [%s]", d.RequestId, cmd.Process.Pid, err)
+	}
+	for {
+		if result.StatusCode != 200 {
+			break
+		}
+		if time.Now().After(deadline) {
+			log.Printf("[%d] [GRACEFUL_SHUTDOWN_PROCESS_FAILED_AFTER %d seconds] [%d]", d.RequestId, 10, cmd.Process.Pid)
+			break
+		}
+		time.Sleep(1 * time.Second)
+		result, err = http.Get(url.String())
+		if err != nil {
+			break
+		}
+	}
+
+	err = stopProc(cmd)
+	if stdout, ok := cmd.Stdout.(*os.File); ok && !d.CaptureDriverLogs && d.LogOutputDir != "" {
+		_ = stdout.Close()
+	}
 	if err != nil {
 		log.Printf("[%d] [FAILED_TO_TERMINATE_PROCESS] [%d] [%v]", d.RequestId, cmd.Process.Pid, err)
 		return
 	}
-	if stdout, ok := cmd.Stdout.(*os.File); ok && !d.CaptureDriverLogs && d.LogOutputDir != "" {
-		_ = stdout.Close()
-	}
 	log.Printf("[%d] [TERMINATED_PROCESS] [%d] [%.2fs]", d.RequestId, cmd.Process.Pid, info.SecondsSince(s))
+}
+
+func stopProc(cmd *exec.Cmd) error {
+	time.Sleep(2 * time.Second)
+	err := cmd.Wait()
+	if err != nil {
+		return err
+	}
+	if !cmd.ProcessState.Exited() {
+		err := cmd.Process.Signal(syscall.SIGTERM)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
