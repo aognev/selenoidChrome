@@ -71,7 +71,7 @@ var (
 func init() {
 	var mem service.MemLimit
 	var cpu service.CpuLimit
-	flag.BoolVar(&disableDocker, "disable-docker", false, "Disable docker support")
+	flag.BoolVar(&disableDocker, "disable-docker", true, "Disable docker support")
 	flag.BoolVar(&disableQueue, "disable-queue", false, "Disable wait queue")
 	flag.BoolVar(&enableFileUpload, "enable-file-upload", false, "File upload support")
 	flag.StringVar(&listen, "listen", ":4444", "Network address to accept connections")
@@ -369,6 +369,16 @@ var paths = struct {
 	Welcome:   "/",
 }
 
+var devToolsPaths = struct {
+	Browser, Protocol, Page, PageSlash, Welcome string
+}{
+	Browser:   "/browser",
+	Protocol:  "/json/protocol",
+	Page:      "/page",
+	PageSlash: "/page/",
+	Welcome:   "/",
+}
+
 func handler() http.Handler {
 	root := http.NewServeMux()
 	root.HandleFunc(paths.WdHub+"/", func(w http.ResponseWriter, r *http.Request) {
@@ -391,11 +401,18 @@ func handler() http.Handler {
 	root.HandleFunc(paths.Video, video)
 	root.HandleFunc(paths.Download, reverseProxy(func(sess *session.Session) string { return sess.HostPort.Fileserver }, "DOWNLOADING_FILE"))
 	root.HandleFunc(paths.Clipboard, reverseProxy(func(sess *session.Session) string { return sess.HostPort.Clipboard }, "CLIPBOARD"))
-	root.HandleFunc(paths.Devtools, reverseProxy(func(sess *session.Session) string { return sess.HostPort.Devtools }, "DEVTOOLS"))
 	if enableFileUpload {
 		root.HandleFunc(paths.File, fileUpload)
 	}
 	root.HandleFunc(paths.Welcome, welcome)
+
+	devToolsServeMux := http.NewServeMux()
+	devToolsServeMux.HandleFunc(devToolsPaths.Browser, browser)
+	devToolsServeMux.HandleFunc(devToolsPaths.Protocol, protocol)
+	devToolsServeMux.HandleFunc(devToolsPaths.Page, page)
+	devToolsServeMux.HandleFunc(devToolsPaths.PageSlash, page)
+	devToolsServeMux.HandleFunc(devToolsPaths.Welcome, browser)
+	root.HandleFunc(paths.Devtools, devTools(func(sess *session.Session) string { return sess.HostPort.Devtools }, devToolsServeMux))
 	return root
 }
 

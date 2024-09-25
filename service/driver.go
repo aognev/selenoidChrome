@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"github.com/aerokube/selenoid/info"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -23,6 +23,8 @@ type Driver struct {
 	Environment
 	session.Caps
 }
+
+const chromeDriverPortOffSet = 40000
 
 // StartWithCancel - Starter interface implementation
 func (d *Driver) StartWithCancel() (*StartedService, error) {
@@ -42,14 +44,10 @@ func (d *Driver) StartWithCancel() (*StartedService, error) {
 		return nil, errors.New("configuration error: image is empty")
 	}
 	log.Printf("[%d] [ALLOCATING_PORT]", requestId)
-	l, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		return nil, fmt.Errorf("cannot bind to port: %v", err)
-	}
-	u := &url.URL{Scheme: "http", Host: l.Addr().String(), Path: d.Service.Path}
-	_, port, _ := net.SplitHostPort(l.Addr().String())
-	log.Printf("[%d] [ALLOCATED_PORT] [%s]", requestId, port)
-	cmdLine = append(cmdLine, fmt.Sprintf("--port=%s", port))
+	freePort := session.Ports.GetFreePort(chromeDriverPortOffSet)
+	u := &url.URL{Scheme: "http", Host: "127.0.0.1:" + strconv.Itoa(int(freePort)), Path: d.Service.Path}
+	log.Printf("[%d] [ALLOCATED_PORT] [%s]", requestId, freePort)
+	cmdLine = append(cmdLine, fmt.Sprintf("--port=%d", freePort))
 	cmd := exec.Command(cmdLine[0], cmdLine[1:]...)
 	cmd.Env = append(cmd.Env, d.Service.Env...)
 	cmd.Env = append(cmd.Env, d.Caps.Env...)
@@ -65,10 +63,9 @@ func (d *Driver) StartWithCancel() (*StartedService, error) {
 		cmd.Stdout = f
 		cmd.Stderr = f
 	}
-	_ = l.Close()
 	log.Printf("[%d] [STARTING_PROCESS] [%s]", requestId, cmdLine)
 	s := time.Now()
-	err = cmd.Start()
+	err := cmd.Start()
 
 	if err != nil {
 		return nil, fmt.Errorf("cannot start process %v: %v", cmdLine, err)
@@ -85,8 +82,9 @@ func (d *Driver) StartWithCancel() (*StartedService, error) {
 	if d.Caps.VNC {
 		hp.VNC = "127.0.0.1:5900"
 	}
-	return &StartedService{Url: u, HostPort: hp, Origin: fmt.Sprintf("localhost:%s", port), Cancel: func() {
-		d.stopDriver(cmd, url.URL{Scheme: "http", Host: "127.0.0.1:" + port, Path: "shutdown"})
+	return &StartedService{Url: u, HostPort: hp, Origin: fmt.Sprintf("127.0.0.1:%d", freePort), Cancel: func() {
+		d.stopDriver(cmd, url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", freePort), Path: "shutdown"})
+		session.Ports.ReleasePort(freePort)
 	}}, nil
 }
 

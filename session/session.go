@@ -1,7 +1,12 @@
 package session
 
 import (
+	"crypto/rand"
+	"log"
+	"math/big"
+	"net"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -154,4 +159,45 @@ type Metadata struct {
 	Capabilities Caps      `json:"capabilities"`
 	Started      time.Time `json:"started"`
 	Finished     time.Time `json:"finished"`
+}
+
+type PortsStorage struct {
+	m map[int64]interface{}
+	l sync.RWMutex
+}
+
+var Ports = &PortsStorage{m: make(map[int64]interface{})}
+
+func (dvp *PortsStorage) remove(k int64) {
+	dvp.l.Lock()
+	defer dvp.l.Unlock()
+	delete(dvp.m, k)
+}
+
+func (dvp *PortsStorage) GetFreePort(portOffset int) int64 {
+	dvp.l.Lock()
+	defer dvp.l.Unlock()
+	for i := 0; i < 10000; i++ {
+		n, _ := rand.Int(rand.Reader, big.NewInt(int64(5000)))
+		var port = n.Int64() + int64(portOffset)
+		_, ok := dvp.m[port]
+		if ok {
+			continue
+		} else {
+			dial, err := net.DialTimeout("tcp4", "127.0.0.1:"+strconv.Itoa(int(port)), 100*time.Millisecond)
+			if err == nil {
+				log.Printf("port '%d' is busy", port)
+				dial.Close()
+				continue
+			}
+			dvp.m[port] = new(interface{})
+			return port
+		}
+	}
+	panic("all ports busy")
+}
+
+func (dvp *PortsStorage) ReleasePort(port int64) {
+	dvp.remove(port)
+	log.Printf("[PORT_NOW_FREE] [%d]", port)
 }
